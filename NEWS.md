@@ -1,3 +1,20 @@
+# dendromatic 0.2.0
+
+* `apply_breaks_and_shift()` split into composable steps: `dm_level_breaks()`,
+  `dm_erase_dormancy()`, `dm_align_seasons()`, `dm_rebase_zero()`.
+  `dm_clean_series()` composes them in the original sequence; output remains
+  byte-identical to the toolkit implementation (enforced by the parity test).
+  `apply_breaks_and_shift()` stays as an exported alias.
+* Progress is now also signalled via 'progressr' (new Import): wrap calls in
+  `progressr::with_progress()` or Shiny's `withProgressShiny()` handler. The
+  terminal text bar is unchanged.
+* New synthetic example dataset `dendro_sample` (two series, two seasons,
+  one reinstallation step, one gap; `data-raw/dendro_sample.R`).
+* Two vignettes: "Getting started with dendromatic" and "How break leveling
+  works".
+* pkgdown site configuration and GitHub Actions (R CMD check matrix + pkgdown
+  deploy).
+
 # dendromatic 0.1.0
 
 Initial package release (GitHub/r-universe stage; not on CRAN).

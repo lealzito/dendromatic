@@ -1,6 +1,6 @@
 Package: dendromatic
 Title: Processing, Cleaning and Normalization of Dendrometer Time Series
-Version: 0.1.0
+Version: 0.2.0
 Authors@R:
     person("João Gabriel", "Leal Martins",
            email = "joaogabriellealmartins@gmail.com",
@@ -21,6 +21,7 @@ Depends:
     R (>= 4.1)
 Imports:
     dplyr,
+    progressr,
     tidyr,
     lubridate,
     stringr,
@@ -36,9 +37,13 @@ Imports:
 Suggests:
     treenetproc,
     future.apply,
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
 Remotes:
     treenet/treenetproc
 Config/testthat/edition: 3
 URL: https://github.com/joaoglmartins/dendromatic
 BugReports: https://github.com/joaoglmartins/dendromatic/issues
+LazyData: true

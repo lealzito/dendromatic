@@ -1,13 +1,23 @@
+## Break leveling, dormancy erasure, season alignment, zero re-basing.
+##
+## Architecture (0.2.0 split): the public step functions dm_level_breaks(),
+## dm_erase_dormancy(), dm_align_seasons() and dm_rebase_zero() share internal
+## engines whose code is VERBATIM from the original apply_breaks_and_shift()
+## (DendroMatic pipeline_helpers.R), parameterized only by flags and by the
+## message prefix. dm_clean_series() composes them in the exact original
+## sequence; byte-identity with the toolkit implementation is enforced by
+## tests/testthat/test-parity-toolkit.R.
+
 ## Internal: filter a data.frame to a year range for dcr_app ------------------
 .make_dcr_view <- function(df, year_range = NULL, tz = "UTC") {
   if (!inherits(df$ts, "POSIXct")) df$ts <- as.POSIXct(df$ts, tz = tz)
   if (is.null(year_range)) return(df)
-  
+
   y_min    <- min(year_range)
   y_max    <- max(year_range)
   start_ts <- as.POSIXct(sprintf("%d-01-01 00:00:00", y_min),     tz = tz)
   end_ts   <- as.POSIXct(sprintf("%d-01-01 00:00:00", y_max + 1L), tz = tz)
-  
+
   df[df$ts >= start_ts & df$ts < end_ts, , drop = FALSE]
 }
 
@@ -20,7 +30,7 @@
   # Returns list(slope_day, used_fallback).
   method <- match.arg(method)
   if (nrow(pre_win) < 3) return(list(slope_day = 0, used_fallback = TRUE))
-  
+
   if (method %in% c("10min_lm", "10min_lm_flip")) {
     x   <- as.numeric(pre_win$ts) / 86400
     fit <- try(stats::lm(pre_win$value ~ x), silent = TRUE)
@@ -30,15 +40,15 @@
     if (!allow_negative_growth) s <- max(0, s)
     return(list(slope_day = s, used_fallback = FALSE))
   }
-  
+
   daydat <- pre_win %>%
     dplyr::mutate(day = as.Date(ts, tz = attr(pre_win$ts, "tzone"))) %>%
     dplyr::group_by(day) %>%
     dplyr::summarise(value = stats::median(value, na.rm = TRUE), .groups = "drop") %>%
     dplyr::arrange(day)
-  
+
   if (nrow(daydat) < 3) return(list(slope_day = 0, used_fallback = TRUE))
-  
+
   if (method == "daily_lm") {
     xd  <- as.numeric(daydat$day)
     fit <- try(stats::lm(daydat$value ~ xd), silent = TRUE)
@@ -47,7 +57,7 @@
     if (!allow_negative_growth) s <- max(0, s)
     return(list(slope_day = s, used_fallback = FALSE))
   }
-  
+
   if (method == "daily_robust") {
     xd <- as.numeric(daydat$day)
     dv <- diff(daydat$value)
@@ -57,44 +67,24 @@
     if (!allow_negative_growth) s <- max(0, s)
     return(list(slope_day = s, used_fallback = FALSE))
   }
-  
+
   list(slope_day = 0, used_fallback = TRUE)
 }
 
-#' @rdname dm_clean_series
-#' @export
-apply_breaks_and_shift <- function(
-    df,
-    brks,                              # list of c(start_ts, end_ts)
-    grow_start_dm        = "01-05",    # DD-MM start of growing season
-    grow_end_dm          = "31-10",    # DD-MM end of growing season
-    growth_window_days   = 14,
-    growth_method        = c("daily_lm", "10min_lm", "daily_robust", "10min_lm_flip"),
-    allow_negative_growth = FALSE,
-    max_slope_day        = Inf,        # µm/day cap for slope estimate
-    max_growth_total     = Inf,        # µm cap for g_est per gap
-    tz                   = "UTC",
-    rerun_proc_L2        = TRUE,
-    year_range           = NULL,
-    do_dormancy_gap      = TRUE,       # erase inter-seasonal dormancy periods and
-    # pre-first-season data for every series
-    align_to_prev_peak   = TRUE,       # align each season's start to prior year's max
-    initial_clip_ts      = NULL,       # drop rows before this timestamp (character or POSIXct)
-    final_clip_ts        = NULL,       # drop rows after this timestamp  (character or POSIXct)
-    first_year_override  = NULL,       # integer: force a specific first growing-season year;
-    # NULL = auto-detect (first year with >= 1 non-NA obs WITHIN [grow_start_dm, grow_end_dm])
-    last_year_override   = NULL        # integer: force a specific last growing-season year;
-    # NULL = auto-detect (last year with >= 1 non-NA obs WITHIN [grow_start_dm, grow_end_dm])
-) {
-  growth_method <- match.arg(growth_method)
-  if (isTRUE(rerun_proc_L2)) .need_treenetproc("dm_clean_series(rerun_proc_L2 = TRUE)")
+## Internal: validate + coerce a series df (verbatim from the original head) ---
+.prep_series_df <- function(df, tz, caller) {
   if (!all(c("series", "ts", "value") %in% names(df)))
-    stop("apply_breaks_and_shift: df must contain: series, ts, value.")
-  
+    stop(caller, ": df must contain: series, ts, value.")
+
   if (!inherits(df$ts, "POSIXct")) df$ts <- as.POSIXct(df$ts, tz = tz)
   attr(df$ts, "tzone") <- tz
-  df   <- df %>% dplyr::arrange(series, ts)
-  df   <- df %>% dplyr::mutate(.row_id = dplyr::row_number())
+  df <- df %>% dplyr::arrange(series, ts)
+  df <- df %>% dplyr::mutate(.row_id = dplyr::row_number())
+  df
+}
+
+## Internal: normalize brks to a named list of POSIXct pairs -------------------
+.normalize_brks <- function(brks, df, tz, caller) {
   ## Back-compat (pre-2026-08-17 interface): legacy site scripts (KROOF/HOF/HOL/
   ## basic 02_ pipelines) pass a FLAT unnamed list of c(start, end) pairs for a
   ## single-series df. The named per-series lookup below would then silently
@@ -105,34 +95,47 @@ apply_breaks_and_shift <- function(
   if (is_flat_pairs) {
     ser_all <- unique(as.character(df$series))
     if (length(ser_all) != 1L)
-      stop("apply_breaks_and_shift: a flat brks pair list is only valid for a ",
+      stop(caller, ": a flat brks pair list is only valid for a ",
            "single-series df (got ", length(ser_all), " series). ",
            "Pass a named list (series -> list of c(start, end) pairs) instead.")
     brks <- stats::setNames(list(brks), ser_all)
   }
-  ## brks is a named list (series → list of c(start_ts, end_ts) pairs).
+  ## brks is a named list (series -> list of c(start_ts, end_ts) pairs).
   ## Convert each pair's timestamps to POSIXct; do NOT collapse the outer structure.
-  brks <- lapply(brks, function(b_list) {
+  lapply(brks, function(b_list) {
     lapply(b_list, function(b) as.POSIXct(b, tz = tz))
   })
-  
-  # 0) Optional timestamp clips (applied before any break or dormancy logic)
+}
+
+## Internal: optional timestamp clips ------------------------------------------
+.clip_ts <- function(df, initial_clip_ts, final_clip_ts, tz, caller) {
   if (!is.null(initial_clip_ts)) {
     clip_s <- if (inherits(initial_clip_ts, "POSIXct")) initial_clip_ts
     else as.POSIXct(as.character(initial_clip_ts), tz = tz)
     df <- df %>% dplyr::filter(ts >= clip_s)
-    message("apply_breaks_and_shift: initial_clip_ts applied; ",
+    message(caller, ": initial_clip_ts applied; ",
             nrow(df), " rows remaining.")
   }
   if (!is.null(final_clip_ts)) {
     clip_e <- if (inherits(final_clip_ts, "POSIXct")) final_clip_ts
     else as.POSIXct(as.character(final_clip_ts), tz = tz)
     df <- df %>% dplyr::filter(ts <= clip_e)
-    message("apply_breaks_and_shift: final_clip_ts applied; ",
+    message(caller, ": final_clip_ts applied; ",
             nrow(df), " rows remaining.")
   }
-  out <- df  # re-assign so step 1 picks up clipped df
-  
+  df
+}
+
+## Internal: step 1 engine -- user-defined breaks with growth-aware leveling ---
+## Code verbatim from the original apply_breaks_and_shift step 1; `caller` only
+## substitutes the message/warning prefix, and a progressr signal is added next
+## to the text progress bar.
+.level_breaks_engine <- function(out, brks,
+                                 grow_start_dm, grow_end_dm,
+                                 growth_window_days, growth_method,
+                                 allow_negative_growth,
+                                 max_slope_day, max_growth_total,
+                                 tz, caller) {
   # 1) User-defined breaks with growth-aware base leveling.
   # All breaks are processed inside a single group_modify call, replacing the
   # previous one group_modify per break loop. This avoids O(N_breaks * N_series)
@@ -140,18 +143,20 @@ apply_breaks_and_shift <- function(
   n_total_brks <- sum(vapply(brks, length, integer(1L)))
   if (n_total_brks > 0L) {
 
-    # Progress bar: one tick per series in group_modify
+    # Progress: one tick per series in group_modify (text bar + progressr signal)
     n_ser_brk   <- dplyr::n_distinct(out$series)
-    message("apply_breaks_and_shift [1/3 breaks]: ", n_total_brks,
+    message(caller, " [breaks]: ", n_total_brks,
             " break(s) across ", n_ser_brk, " series...")
     pb_brk      <- utils::txtProgressBar(min = 0, max = n_ser_brk, style = 3, width = 50)
+    p_brk       <- progressr::progressor(steps = n_ser_brk)
     pb_env_brk  <- new.env(parent = emptyenv())
     pb_env_brk$i <- 0L
-    
+
     adjust_all_breaks <- function(g, key, brks_list) {
       # Increment progress counter (shared mutable environment, one tick per series)
       pb_env_brk$i <- pb_env_brk$i + 1L
       utils::setTxtProgressBar(pb_brk, pb_env_brk$i)
+      p_brk(message = sprintf("breaks: %s", as.character(key$series[1L])))
       # Apply every break correction sequentially to a single-series data frame.
       # Breaks must be applied in chronological order so each shift accumulates.
       if (nrow(g) == 0L) return(g)
@@ -161,7 +166,7 @@ apply_breaks_and_shift <- function(
         b_start <- b[[1]]
         b_end   <- b[[2]]
         if (is.na(b_start) || is.na(b_end) || b_end <= b_start) next
-        
+
         # --- v3 bounded nearest-non-NA reference search (replaces the v1_idx/v2_idx boundary lookup) ---
         # A break endpoint frequently lands on (or inside) a gap, so the grid cell AT the boundary is
         # NA. Reading v1/v2 from that cell made adj = NA and nulled the entire post-break tail (the L2
@@ -178,19 +183,19 @@ apply_breaks_and_shift <- function(
         if (length(valid_pre) == 0L || length(valid_post) == 0L) {
           g$value[g$ts >= b_start & g$ts <= b_end] <- NA_real_
           warning(sprintf(
-            "apply_breaks_and_shift [%s]: break [%s, %s] has no in-window reference (endpoint on a gap); in-gap deleted, level shift skipped.",
-            as.character(key$series[1L]),
+            "%s [%s]: break [%s, %s] has no in-window reference (endpoint on a gap); in-gap deleted, level shift skipped.",
+            caller, as.character(key$series[1L]),
             format(b_start, "%Y-%m-%d %H:%M"), format(b_end, "%Y-%m-%d %H:%M")))
           next
         }
         v1 <- g$value[max(valid_pre)]   # nearest non-NA value before b_start (within window)
         v2 <- g$value[min(valid_post)]  # nearest non-NA value after  b_end   (within window)
-        
+
         in_gap <- g$ts >= b_start & g$ts <= b_end
         g$value[in_gap] <- NA_real_
-        
+
         adj <- v1 - v2
-        
+
         win_start <- b_start - lubridate::days(as.numeric(growth_window_days))
         pre_win   <- g[g$ts >= win_start & g$ts < b_start & !is.na(g$value), ]
         est       <- .estimate_slope(pre_win,
@@ -201,7 +206,7 @@ apply_breaks_and_shift <- function(
         g_est_raw <- slope_day * (grow_secs / 86400)
         g_est     <- min(g_est_raw, max_growth_total)
         adj       <- adj + g_est
-        
+
         ## Guard against NA-propagation erasure (was: unconditional g$value[after] <- + adj).
         ## v1 or v2 is NA when a break endpoint lands on an NA grid cell (breaks usually sit
         ## at gap edges), so adj becomes NA and adding it nulls EVERY value after b_end --
@@ -214,23 +219,35 @@ apply_breaks_and_shift <- function(
           g$value[after] <- g$value[after] + adj
         } else {
           warning(sprintf(
-            "apply_breaks_and_shift [%s]: break [%s, %s] has an NA reference value (endpoint on a gap); level shift skipped, post-break data preserved un-levelled.",
-            as.character(key$series[1L]),
+            "%s [%s]: break [%s, %s] has an NA reference value (endpoint on a gap); level shift skipped, post-break data preserved un-levelled.",
+            caller, as.character(key$series[1L]),
             format(b_start, "%Y-%m-%d %H:%M"), format(b_end, "%Y-%m-%d %H:%M")))
         }
       }
       g
     }
-    
+
     out <- out %>%
       dplyr::group_by(series) %>%
       dplyr::group_modify(~ adjust_all_breaks(.x, .y, brks_list = brks)) %>%
       dplyr::ungroup()
-    
+
     close(pb_brk)
     message("")  # newline after txtProgressBar
   }
-  
+  out
+}
+
+## Internal: step 2 engine -- dormancy erasure + prior-peak alignment ----------
+## Code verbatim from the original apply_breaks_and_shift step 3 block; the two
+## flags are independent (erasure only / alignment only / both), `caller` only
+## substitutes the message prefix, and a progressr signal is added next to the
+## text progress bar.
+.season_pass_engine <- function(out,
+                                grow_start_dm, grow_end_dm, tz,
+                                do_dormancy_gap, align_to_prev_peak,
+                                first_year_override, last_year_override,
+                                caller) {
   # 3) Optional dormancy erase + peak align with carry-forward
   #
   # do_dormancy_gap = TRUE: set all data outside [grow_start_dm, grow_end_dm] to NA
@@ -242,21 +259,21 @@ apply_breaks_and_shift <- function(
   # align_to_prev_peak = TRUE: for years > first_year only, shift each season's
   # start value up to match the previous year's maximum (preserves cumulative
   # growth across winter). No alignment is applied for the first year (no prior
-  # peak exists). No value anchoring to zero is performed here; step 3.5 ensures
-  # min(value) = 0 per series after all erasure and alignment are complete.
+  # peak exists). No value anchoring to zero is performed here; dm_rebase_zero()
+  # ensures min(value) = 0 per series after all erasure and alignment are complete.
   #
   # The two flags are independent: do_dormancy_gap controls erasure only;
   # align_to_prev_peak controls inter-annual peak carry-forward only.
   if (isTRUE(do_dormancy_gap) || isTRUE(align_to_prev_peak)) {
-    
-    # Progress bar: one tick per series in group_modify
+
+    # Progress: one tick per series in group_modify (text bar + progressr signal)
     n_ser_dorm   <- dplyr::n_distinct(out$series)
-    message("apply_breaks_and_shift [2/3 dormancy/alignment]: ",
-            n_ser_dorm, " series...")
+    message(caller, " [dormancy/alignment]: ", n_ser_dorm, " series...")
     pb_dorm      <- utils::txtProgressBar(min = 0, max = n_ser_dorm, style = 3, width = 50)
+    p_dorm       <- progressr::progressor(steps = n_ser_dorm)
     pb_env_dorm  <- new.env(parent = emptyenv())
     pb_env_dorm$i <- 0L
-    
+
     out <- out %>%
       dplyr::mutate(yr = as.integer(format(ts, "%Y"))) %>%
       dplyr::group_by(series) %>%
@@ -264,16 +281,17 @@ apply_breaks_and_shift <- function(
         # Increment progress counter
         pb_env_dorm$i <- pb_env_dorm$i + 1L
         utils::setTxtProgressBar(pb_dorm, pb_env_dorm$i)
+        p_dorm(message = sprintf("seasons: %s", as.character(key$series[1L])))
         if (nrow(g) == 0L) return(g)
         years <- sort(unique(as.integer(format(g$ts, "%Y"))))
-        
+
         mk_ts <- function(y, dm, end_of_day = FALSE) {
           d      <- as.integer(substr(dm, 1, 2))
           m      <- as.integer(substr(dm, 4, 5))
           hhmmss <- if (end_of_day) "23:59:59" else "00:00:00"
           as.POSIXct(sprintf("%04d-%02d-%02d %s", y, m, d, hhmmss), tz = tz)
         }
-        
+
         ## Auto-detect the first growing-season year:
         ## first_gs_year is the earliest year that has at least one non-NA value
         ## WITHIN [grow_start_dm, grow_end_dm] of that year. This correctly handles
@@ -305,7 +323,7 @@ apply_breaks_and_shift <- function(
             ## Override year has no growing-season data (e.g., only a few hours
             ## on Dec 31 of the year before the true first season). Fall back to
             ## the auto-detected year; emit a message for traceability.
-            message("apply_breaks_and_shift [", key$series[1L], "]: first_year_override=",
+            message(caller, " [", key$series[1L], "]: first_year_override=",
                     yr_ov, " has no growing-season data; using auto-detected year ",
                     if (is.na(first_gs_year)) "NA (series will be fully erased)"
                     else first_gs_year, " instead.")
@@ -316,15 +334,15 @@ apply_breaks_and_shift <- function(
           g$value <- NA_real_
           return(g)
         }
-        
+
         for (y in years) {
           start_prev <- mk_ts(y - 1L, grow_start_dm)
           end_prev   <- mk_ts(y - 1L, grow_end_dm,  end_of_day = TRUE)
           start_cur  <- mk_ts(y,      grow_start_dm)
-          
+
           i_start <- suppressWarnings(min(which(g$ts >= start_cur & !is.na(g$value))))
           if (!is.finite(i_start)) next
-          
+
           ## Year-1 treatment: erase ALL data before grow_start_dm of first_gs_year.
           ## Uses timestamp comparison (not row index) so data from any earlier calendar
           ## year (e.g., December of the year before first_gs_year) is also erased.
@@ -332,7 +350,7 @@ apply_breaks_and_shift <- function(
             g$value[g$ts < start_cur] <- NA_real_
             next
           }
-          
+
           ## Regular inter-annual dormancy gap and peak alignment (y > first_year)
           if (isTRUE(do_dormancy_gap)) {
             i_end_prev <- suppressWarnings(max(which(g$ts <= end_prev & !is.na(g$value))))
@@ -341,7 +359,7 @@ apply_breaks_and_shift <- function(
               g$value[mid] <- NA_real_
             }
           }
-          
+
           if (isTRUE(align_to_prev_peak)) {
             prev_win <- g$ts >= start_prev & g$ts <= end_prev & !is.na(g$value)
             if (any(prev_win)) {
@@ -355,7 +373,7 @@ apply_breaks_and_shift <- function(
             }
           }
         }
-        
+
         ## Final-clip: erase all data after grow_end_dm of the last year
         ## that has any non-NA values WITHIN [grow_start_dm, grow_end_dm].
         ## Activated when do_dormancy_gap = TRUE (align_to_prev_peak not required).
@@ -397,19 +415,22 @@ apply_breaks_and_shift <- function(
             g$value[g$ts > end_last] <- NA_real_
           }
         }
-        
+
         g
       }) %>%
       dplyr::ungroup() %>%
       dplyr::select(-yr)
-    
+
     close(pb_dorm)
     message("")  # newline after txtProgressBar
   }
-  
-  
-  # 3.5) Per-series min -> 0, applied after all break corrections, dormancy
-  # gap erasure, and peak alignment (steps 1 and 3).
+  out
+}
+
+## Internal: step 3.5 engine -- per-series min -> 0 -----------------------------
+.rebase_zero_engine <- function(out) {
+  # Per-series min -> 0, applied after all break corrections, dormancy
+  # gap erasure, and peak alignment.
   #
   # This replaces the former global-minimum subtraction (step 2, removed).
   # Step 2 ran BEFORE the dormancy gap / year-1 anchor (step 3). Because the
@@ -422,76 +443,140 @@ apply_breaks_and_shift <- function(
   # relative differences, so a constant per-series offset does not distort it.
   # Per-series grouping (not global) ensures each series is independently
   # floored at zero regardless of cross-series amplitude differences.
-  out <- out %>%
+  out %>%
     dplyr::group_by(series) %>%
     dplyr::mutate(value = {
       s_min <- suppressWarnings(min(value, na.rm = TRUE))
       if (is.finite(s_min) && s_min != 0) ifelse(is.na(value), NA_real_, value - s_min) else value
     }) %>%
     dplyr::ungroup()
-  
-  # 4) Optional re-run of L2 so ZG and TWD are consistent
-  if (isTRUE(rerun_proc_L2)) {
-    message("apply_breaks_and_shift [3/3 rerun L2]...")
-    ## Record positions erased by dormancy gap / year-1 treatment (step 3).
-    ## proc_dendro_L2 may restore pre-season NAs (e.g. by carrying the first
-    ## valid observation backward as a running baseline). Re-applying the mask
-    ## after proc_dendro_L2 ensures all erased positions remain NA in the output.
-    pre_proc_na <- tibble::tibble(
-      series  = out$series,
-      ts      = out$ts,
-      .was_na = is.na(out$value)
-    )
-    
-    L1_like <- out %>%
-      dplyr::arrange(series, ts) %>%
-      dplyr::select(dplyr::all_of(c("series", "ts", "value")))
-    
-    res <- treenetproc::proc_dendro_L2(dendro_L1 = L1_like, plot = FALSE)
-    
-    ## Guard: proc_dendro_L2 silently returns an empty or column-stripped data
-    ## frame when all values for a series are NA (treenetproc message:
-    ## "There is no data available for <series>. This series is skipped.").
-    ## In that case the left_join below would crash on missing series/ts columns.
-    ## Return `out` as-is -- the NA mask is already applied and there is nothing
-    ## for proc_dendro_L2 to recompute.
-    if (nrow(res) == 0L || !all(c("series", "ts") %in% names(res))) {
-      message("apply_breaks_and_shift: proc_dendro_L2 returned no usable output ",
-              "(all-NA series after dormancy erasure or break correction). ",
-              "Returning pre-proc data unchanged.")
-      attr(out, "dcr_view") <- .make_dcr_view(out, year_range = year_range, tz = tz)
-      return(out)
-    }
-    
-    ## Re-apply dormancy / pre-season NA mask: erased positions must remain NA
-    ## regardless of what proc_dendro_L2 computed for them.
-    res <- res %>%
-      dplyr::left_join(pre_proc_na, by = c("series", "ts")) %>%
-      dplyr::mutate(
-        value = dplyr::if_else(!is.na(.was_na) & .was_na, NA_real_, value)
-      ) %>%
-      dplyr::select(-.was_na)
-    
-    attr(res, "dcr_view") <- .make_dcr_view(res, year_range = year_range, tz = tz)
-    return(res)
-  } else {
-    attr(out, "dcr_view") <- .make_dcr_view(out, year_range = year_range, tz = tz)
-    return(out)
-  }
 }
 
+## ---- Public step functions ---------------------------------------------------
+
+#' Level sensor breaks with growth-aware shifting
+#'
+#' Applies user-defined break windows (sensor relocations, reinstallations,
+#' jumps) to a series: the in-break span is deleted and all post-break values
+#' are shifted so the level reconnects to the pre-break reference, plus a
+#' growth extrapolation estimated from the pre-break slope. The reference on
+#' each side of the break is the nearest non-NA value within
+#' `growth_window_days` (so a break endpoint sitting on a data gap does not
+#' poison the shift). One of the composable steps behind [dm_clean_series()].
+#'
+#' @inheritParams dm_clean_series
+#' @return `df` with breaks levelled (plus an internal `.row_id` ordering
+#'   column added by the input validation).
+#' @export
+dm_level_breaks <- function(df,
+                            brks,
+                            grow_start_dm         = "01-05",
+                            grow_end_dm           = "31-10",
+                            growth_window_days    = 14,
+                            growth_method         = c("daily_lm", "10min_lm",
+                                                      "daily_robust", "10min_lm_flip"),
+                            allow_negative_growth = FALSE,
+                            max_slope_day         = Inf,
+                            max_growth_total      = Inf,
+                            tz                    = "UTC") {
+  growth_method <- match.arg(growth_method)
+  df   <- .prep_series_df(df, tz, caller = "dm_level_breaks")
+  brks <- .normalize_brks(brks, df, tz, caller = "dm_level_breaks")
+  .level_breaks_engine(df, brks,
+                       grow_start_dm, grow_end_dm,
+                       growth_window_days, growth_method,
+                       allow_negative_growth,
+                       max_slope_day, max_growth_total,
+                       tz, caller = "dm_level_breaks")
+}
+
+#' Erase dormancy periods outside the growing season
+#'
+#' Sets to `NA` all data outside the `[grow_start_dm, grow_end_dm]` window of
+#' each year: pre-first-season data, inter-annual dormancy gaps, and data
+#' after the last year with valid growing-season observations. A series with
+#' no growing-season data at all is fully erased. One of the composable steps
+#' behind [dm_clean_series()].
+#'
+#' @inheritParams dm_clean_series
+#' @return `df` with dormancy periods erased (plus an internal `.row_id`
+#'   ordering column added by the input validation).
+#' @export
+dm_erase_dormancy <- function(df,
+                              grow_start_dm       = "01-05",
+                              grow_end_dm         = "31-10",
+                              tz                  = "UTC",
+                              first_year_override = NULL,
+                              last_year_override  = NULL) {
+  df <- .prep_series_df(df, tz, caller = "dm_erase_dormancy")
+  .season_pass_engine(df, grow_start_dm, grow_end_dm, tz,
+                      do_dormancy_gap = TRUE, align_to_prev_peak = FALSE,
+                      first_year_override = first_year_override,
+                      last_year_override  = last_year_override,
+                      caller = "dm_erase_dormancy")
+}
+
+#' Align each season's start to the prior year's maximum
+#'
+#' For every year after the first growing season, shifts the season (and all
+#' later data) up so its first value matches the previous season's maximum --
+#' preserving cumulative growth across the winter. The first growing season is
+#' never shifted (no prior peak exists). One of the composable steps behind
+#' [dm_clean_series()].
+#'
+#' @inheritParams dm_clean_series
+#' @param first_year_override Integer forcing the first growing-season year;
+#'   `NULL` = auto-detect from data inside the growing-season window.
+#' @return `df` with seasons aligned (plus an internal `.row_id` ordering
+#'   column added by the input validation).
+#' @export
+dm_align_seasons <- function(df,
+                             grow_start_dm       = "01-05",
+                             grow_end_dm         = "31-10",
+                             tz                  = "UTC",
+                             first_year_override = NULL) {
+  df <- .prep_series_df(df, tz, caller = "dm_align_seasons")
+  .season_pass_engine(df, grow_start_dm, grow_end_dm, tz,
+                      do_dormancy_gap = FALSE, align_to_prev_peak = TRUE,
+                      first_year_override = first_year_override,
+                      last_year_override  = NULL,
+                      caller = "dm_align_seasons")
+}
+
+#' Re-base each series so its minimum is zero
+#'
+#' Subtracts the per-series minimum from all values, flooring every series at
+#' zero. Run after break leveling, dormancy erasure and season alignment --
+#' tree water deficit depends only on relative differences, so the constant
+#' per-series offset does not distort it. One of the composable steps behind
+#' [dm_clean_series()].
+#'
+#' @param df Data.frame with columns `series` and `value`.
+#' @return `df` with each series' minimum re-based to zero.
+#' @export
+dm_rebase_zero <- function(df) {
+  if (!all(c("series", "value") %in% names(df)))
+    stop("dm_rebase_zero: df must contain: series, value.")
+  .rebase_zero_engine(df)
+}
+
+## ---- Pipeline wrapper ----------------------------------------------------------
 
 #' Clean a dendrometer series: breaks, dormancy, alignment, zero base
 #'
-#' The DendroMatic cleaning core. Applies user-defined break windows with
-#' growth-aware level shifting (a bounded nearest-non-NA reference search on
-#' each side of the break, plus a growth extrapolation from the pre-break
-#' slope), optionally erases dormancy periods outside the growing season,
-#' aligns each season's start to the prior year's maximum, re-bases every
-#' series so its minimum is zero, and optionally re-runs
-#' `treenetproc::proc_dendro_L2()` on the result ('treenetproc' required only
-#' for that step). `apply_breaks_and_shift()` is the original DendroMatic
-#' name, kept as an exported alias.
+#' The DendroMatic cleaning core. Composes, in order: [dm_level_breaks()]
+#' (growth-aware break leveling), [dm_erase_dormancy()] and
+#' [dm_align_seasons()] (one combined season pass, controlled by
+#' `do_dormancy_gap` and `align_to_prev_peak`), [dm_rebase_zero()], and an
+#' optional re-run of `treenetproc::proc_dendro_L2()` on the result
+#' ('treenetproc' required only for that step). `apply_breaks_and_shift()` is
+#' the original DendroMatic name, kept as an exported alias; output is
+#' byte-identical to the original single-function implementation (enforced by
+#' the package's toolkit-parity test).
+#'
+#' Progress is reported both as a terminal text bar and as 'progressr'
+#' signals: wrap the call in `progressr::with_progress()` (or a Shiny
+#' `withProgressShiny()` handler) to render them elsewhere.
 #'
 #' @param df Data.frame with columns `series`, `ts`, `value`.
 #' @param brks Named list: series name to a list of `c(start, end)` timestamp
@@ -525,4 +610,104 @@ apply_breaks_and_shift <- function(
 #'   L2 output when `rerun_proc_L2 = TRUE`). Carries a `"dcr_view"`
 #'   attribute with the display view.
 #' @export
-dm_clean_series <- apply_breaks_and_shift
+dm_clean_series <- function(
+    df,
+    brks,                              # list of c(start_ts, end_ts)
+    grow_start_dm        = "01-05",    # DD-MM start of growing season
+    grow_end_dm          = "31-10",    # DD-MM end of growing season
+    growth_window_days   = 14,
+    growth_method        = c("daily_lm", "10min_lm", "daily_robust", "10min_lm_flip"),
+    allow_negative_growth = FALSE,
+    max_slope_day        = Inf,        # µm/day cap for slope estimate
+    max_growth_total     = Inf,        # µm cap for g_est per gap
+    tz                   = "UTC",
+    rerun_proc_L2        = TRUE,
+    year_range           = NULL,
+    do_dormancy_gap      = TRUE,
+    align_to_prev_peak   = TRUE,
+    initial_clip_ts      = NULL,
+    final_clip_ts        = NULL,
+    first_year_override  = NULL,
+    last_year_override   = NULL
+) {
+  growth_method <- match.arg(growth_method)
+  if (isTRUE(rerun_proc_L2)) .need_treenetproc("dm_clean_series(rerun_proc_L2 = TRUE)")
+
+  caller <- "apply_breaks_and_shift"   # original message prefix, kept for script continuity
+  df     <- .prep_series_df(df, tz, caller = caller)
+  brks   <- .normalize_brks(brks, df, tz, caller = caller)
+
+  # 0) Optional timestamp clips (applied before any break or dormancy logic)
+  df  <- .clip_ts(df, initial_clip_ts, final_clip_ts, tz, caller = caller)
+  out <- df
+
+  # 1) Breaks with growth-aware base leveling
+  out <- .level_breaks_engine(out, brks,
+                              grow_start_dm, grow_end_dm,
+                              growth_window_days, growth_method,
+                              allow_negative_growth,
+                              max_slope_day, max_growth_total,
+                              tz, caller = caller)
+
+  # 2) Dormancy erasure + prior-peak alignment (single combined pass)
+  out <- .season_pass_engine(out, grow_start_dm, grow_end_dm, tz,
+                             do_dormancy_gap, align_to_prev_peak,
+                             first_year_override, last_year_override,
+                             caller = caller)
+
+  # 3) Per-series min -> 0
+  out <- .rebase_zero_engine(out)
+
+  # 4) Optional re-run of L2 so ZG and TWD are consistent
+  if (isTRUE(rerun_proc_L2)) {
+    message(caller, " [rerun L2]...")
+    ## Record positions erased by dormancy gap / year-1 treatment (step 2).
+    ## proc_dendro_L2 may restore pre-season NAs (e.g. by carrying the first
+    ## valid observation backward as a running baseline). Re-applying the mask
+    ## after proc_dendro_L2 ensures all erased positions remain NA in the output.
+    pre_proc_na <- tibble::tibble(
+      series  = out$series,
+      ts      = out$ts,
+      .was_na = is.na(out$value)
+    )
+
+    L1_like <- out %>%
+      dplyr::arrange(series, ts) %>%
+      dplyr::select(dplyr::all_of(c("series", "ts", "value")))
+
+    res <- treenetproc::proc_dendro_L2(dendro_L1 = L1_like, plot = FALSE)
+
+    ## Guard: proc_dendro_L2 silently returns an empty or column-stripped data
+    ## frame when all values for a series are NA (treenetproc message:
+    ## "There is no data available for <series>. This series is skipped.").
+    ## In that case the left_join below would crash on missing series/ts columns.
+    ## Return `out` as-is -- the NA mask is already applied and there is nothing
+    ## for proc_dendro_L2 to recompute.
+    if (nrow(res) == 0L || !all(c("series", "ts") %in% names(res))) {
+      message(caller, ": proc_dendro_L2 returned no usable output ",
+              "(all-NA series after dormancy erasure or break correction). ",
+              "Returning pre-proc data unchanged.")
+      attr(out, "dcr_view") <- .make_dcr_view(out, year_range = year_range, tz = tz)
+      return(out)
+    }
+
+    ## Re-apply dormancy / pre-season NA mask: erased positions must remain NA
+    ## regardless of what proc_dendro_L2 computed for them.
+    res <- res %>%
+      dplyr::left_join(pre_proc_na, by = c("series", "ts")) %>%
+      dplyr::mutate(
+        value = dplyr::if_else(!is.na(.was_na) & .was_na, NA_real_, value)
+      ) %>%
+      dplyr::select(-.was_na)
+
+    attr(res, "dcr_view") <- .make_dcr_view(res, year_range = year_range, tz = tz)
+    return(res)
+  } else {
+    attr(out, "dcr_view") <- .make_dcr_view(out, year_range = year_range, tz = tz)
+    return(out)
+  }
+}
+
+#' @rdname dm_clean_series
+#' @export
+apply_breaks_and_shift <- dm_clean_series

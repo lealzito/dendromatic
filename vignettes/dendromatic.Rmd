@@ -1,0 +1,102 @@
+---
+title: "Getting started with dendromatic"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with dendromatic}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>",
+                      fig.width = 7, fig.height = 4)
+```
+
+dendromatic is the computational core behind the DendroMatic applications:
+cleaning and normalization of point-dendrometer time series. This vignette
+walks the standard path from a raw-ish series to a cleaned one on the shipped
+synthetic dataset.
+
+```{r setup}
+library(dendromatic)
+```
+
+## The example data
+
+`dendro_sample` holds two synthetic hourly series over two growing seasons.
+`SYN_Pa002` carries the two artefacts this package exists to fix: a +35 µm
+sensor-reinstallation step (2022-06-15) and a multi-day data gap.
+
+```{r raw-plot}
+d <- subset(dendro_sample, series == "SYN_Pa002")
+plot(d$ts, d$value, type = "l", xlab = "", ylab = "stem radius (µm)",
+     main = "SYN_Pa002, raw")
+abline(v = as.POSIXct("2022-06-15 12:00:00", tz = "UTC"), col = "red", lty = 2)
+```
+
+## Cleaning in one call
+
+`dm_clean_series()` applies, in order: break leveling, dormancy erasure,
+season alignment, and per-series zero re-basing. Break windows are passed as a
+named list, one `c(start, end)` pair per break. `rerun_proc_L2 = FALSE` keeps
+this vignette independent of the GitHub-only 'treenetproc' package; in a real
+pipeline leave it `TRUE` so TWD and zero-growth columns are recomputed.
+
+```{r clean}
+brks <- list(SYN_Pa002 = list(
+  c("2022-06-15 10:00:00", "2022-06-15 14:00:00")
+))
+
+cleaned <- dm_clean_series(
+  df            = dendro_sample,
+  brks          = brks,
+  grow_start_dm = "01-05",   # growing season: 1 May ...
+  grow_end_dm   = "31-10",   # ... to 31 October
+  rerun_proc_L2 = FALSE
+)
+```
+
+```{r clean-plot}
+cd <- subset(cleaned, series == "SYN_Pa002")
+plot(cd$ts, cd$value, type = "l", xlab = "", ylab = "stem radius (µm)",
+     main = "SYN_Pa002, cleaned")
+```
+
+The step is gone, the dormancy period between the seasons is erased, season
+two starts at season one's maximum, and the series minimum sits at zero.
+
+## Daily predawn / midday extrema
+
+Downstream water-relations work usually needs the daily predawn minimum and
+midday maximum of tree water deficit (TWD). With a `twd` column (normally from
+the treenetproc L2 step), `dm_pdmd_extrema()` extracts both in local time:
+
+```{r pdmd}
+## toy TWD: running max minus value, per series
+cleaned$twd <- ave(cleaned$value, cleaned$series, FUN = function(v) {
+  m <- cummax(ifelse(is.na(v), -Inf, v)); ifelse(is.na(v), NA, m - v)
+})
+pdmd <- dm_pdmd_extrema(cleaned, pd_start_hr = 3, pd_end_hr = 6,
+                        md_start_hr = 12, md_end_hr = 15, tz = "Etc/GMT-1")
+head(pdmd)
+```
+
+## Progress reporting
+
+All engines signal progress via 'progressr' (alongside a terminal text bar).
+In scripts:
+
+```{r progressr, eval = FALSE}
+progressr::with_progress(
+  cleaned <- dm_clean_series(dendro_sample, brks = brks)
+)
+```
+
+In a Shiny app, wrap the same call with
+`progressr::withProgressShiny()` -- the core stays UI-free.
+
+## Original names
+
+Every function also answers to its original DendroMatic name
+(`apply_breaks_and_shift()`, `raw_to_L0()`, ...), so existing scripts keep
+running unchanged. See the README API map.
