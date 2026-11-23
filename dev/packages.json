@@ -1,0 +1,10 @@
+[
+    {
+        "package": "dendromatic",
+        "url": "https://github.com/joaoglmartins/dendromatic"
+    },
+    {
+        "package": "treenetproc",
+        "url": "https://github.com/treenet/treenetproc"
+    }
+]
