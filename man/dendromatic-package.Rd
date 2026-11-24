@@ -11,13 +11,13 @@ Tools for point-dendrometer data pipelines: ingest raw logger tables of any shap
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://github.com/joaoglmartins/dendromatic}
-  \item Report bugs at \url{https://github.com/joaoglmartins/dendromatic/issues}
+  \item \url{https://github.com/lealzito/dendromatic}
+  \item Report bugs at \url{https://github.com/lealzito/dendromatic/issues}
 }
 
 }
 \author{
-\strong{Maintainer}: João Gabriel Leal Martins \email{joaogabriellealmartins@gmail.com} [copyright holder]
+\strong{Maintainer}: JoÃ£o Gabriel Leal Martins \email{joaogabriellealmartins@gmail.com} [copyright holder]
 
 }
 \keyword{internal}

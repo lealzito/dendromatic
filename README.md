@@ -5,7 +5,7 @@ The computational core behind the DendroMatic Shiny applications, usable
 standalone in scripted workflows.
 
 **Status: pre-release (0.1.x).** GitHub/r-universe stage; CRAN submission is
-planned only after the API freezes at 1.0.0. Function names may still change —
+planned only after the API freezes at 1.0.0. Function names may still change â€”
 pin a commit/tag if you depend on this.
 
 ## Installation
@@ -13,7 +13,7 @@ pin a commit/tag if you depend on this.
 ```r
 # install.packages("remotes")
 remotes::install_github("treenet/treenetproc")   # suggested dependency
-remotes::install_github("joaoglmartins/dendromatic")
+remotes::install_github("lealzito/dendromatic")
 ```
 
 ## Core pipeline
@@ -54,10 +54,10 @@ Every function also answers to its original DendroMatic name
 | `dm_proc_l1()` | `multi_proc_L1()` | per-variable proc_L1 + join |
 | `dm_run_pipeline()` | `run_L1_L2()` | L0 -> L1 -> L2 backbone with RDS outputs |
 | `dm_clean_series()` | `apply_breaks_and_shift()` | breaks + dormancy + alignment + zero-norm |
-| `dm_level_breaks()` | — (new, 0.2.0) | break leveling step alone |
-| `dm_erase_dormancy()` | — (new, 0.2.0) | dormancy erasure step alone |
-| `dm_align_seasons()` | — (new, 0.2.0) | season alignment step alone |
-| `dm_rebase_zero()` | — (new, 0.2.0) | per-series zero re-base step alone |
+| `dm_level_breaks()` | â€” (new, 0.2.0) | break leveling step alone |
+| `dm_erase_dormancy()` | â€” (new, 0.2.0) | dormancy erasure step alone |
+| `dm_align_seasons()` | â€” (new, 0.2.0) | season alignment step alone |
+| `dm_rebase_zero()` | â€” (new, 0.2.0) | per-series zero re-base step alone |
 | `dm_merge_series()` | `merge_series()` | merge consecutive series, same tree |
 | `dm_pdmd_extrema()` | `compute_pdmd_extrema_tz()` | daily predawn/midday TWD extrema |
 | `dm_build_sfw()` | `build_sfw()` | assemble SFW table from L2 + phase stats |
