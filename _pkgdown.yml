@@ -1,0 +1,31 @@
+url: https://lealzito.github.io/dendromatic/
+template:
+  bootstrap: 5
+
+reference:
+- title: Cleaning pipeline
+  desc: The DendroMatic cleaning core and its composable steps.
+  contents:
+  - dm_clean_series
+  - dm_level_breaks
+  - dm_erase_dormancy
+  - dm_align_seasons
+  - dm_rebase_zero
+- title: Ingestion and processing
+  contents:
+  - dm_build_l0
+  - dm_proc_l1
+  - dm_run_pipeline
+  - dm_merge_series
+  - dm_build_temp_l1
+- title: Water-relations outputs
+  contents:
+  - dm_pdmd_extrema
+  - dm_build_sfw
+  - dm_match_lwp
+- title: Utilities and data
+  contents:
+  - dm_read_table
+  - dm_repair_series
+  - dm_species_lut
+  - dendro_sample
